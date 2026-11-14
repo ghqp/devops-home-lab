@@ -1,9 +1,10 @@
 services:
   nginx:
-    image: nginx:stable
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    image: devops-home-lab/nginx:1.0
     container_name: dev01-nginx
     ports:
       - "8080:80"
-    volumes:
-      - ./nginx/html:/usr/share/nginx/html:ro
     restart: unless-stopped
