@@ -1,0 +1,34 @@
+---
+- name: System maintenance
+  hosts: dev,monitoring
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Update APT package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Upgrade installed packages
+      ansible.builtin.apt:
+        upgrade: safe
+
+    - name: Install essential system utilities
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - htop
+          - tree
+          - unzip
+          - zip
+          - dnsutils
+          - net-tools
+        state: present
+
+    - name: Remove unused packages
+      ansible.builtin.apt:
+        autoremove: true

@@ -1,0 +1,16 @@
+---
+- name: Start application
+  hosts: dev
+  become: true
+  gather_facts: false
+
+  roles:
+    - application
+
+- name: Start monitoring
+  hosts: monitoring
+  become: true
+  gather_facts: false
+
+  roles:
+    - monitoring

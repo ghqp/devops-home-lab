@@ -1,0 +1,19 @@
+---
+- name: Start application with Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ dev_project_dir }}"
+    state: present
+
+- name: Wait for application health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/api/health
+    method: GET
+    status_code: 200
+  register: app_health
+  retries: 10
+  delay: 5
+  until: app_health.status == 200
+
+- name: Report application health
+  ansible.builtin.debug:
+    msg: "Application on DEV01 is healthy"

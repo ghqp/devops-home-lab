@@ -1,0 +1,29 @@
+---
+- name: Start monitoring with Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring_project_dir }}"
+    state: present
+
+- name: Wait for Prometheus
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9090/-/healthy
+    method: GET
+    status_code: 200
+  register: prometheus_health
+  retries: 10
+  delay: 5
+  until: prometheus_health.status == 200
+
+- name: Wait for Grafana
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/api/health
+    method: GET
+    status_code: 200
+  register: grafana_health
+  retries: 10
+  delay: 5
+  until: grafana_health.status == 200
+
+- name: Report monitoring health
+  ansible.builtin.debug:
+    msg: "Prometheus and Grafana on MON01 are healthy"

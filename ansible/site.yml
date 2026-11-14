@@ -1,0 +1,4 @@
+---
+- import_playbook: playbooks/docker-setup.yml
+- import_playbook: playbooks/deploy-infrastructure.yml
+- import_playbook: playbooks/start-infrastructure.yml

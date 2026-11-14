@@ -1,0 +1,35 @@
+---
+- name: Collect system information
+  hosts: dev,monitoring
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Display hostname
+      ansible.builtin.debug:
+        msg: "Hostname: {{ ansible_hostname }}"
+
+    - name: Display operating system
+      ansible.builtin.debug:
+        msg: "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Display kernel
+      ansible.builtin.debug:
+        msg: "Kernel: {{ ansible_kernel }}"
+
+    - name: Display CPU information
+      ansible.builtin.debug:
+        msg: "CPU cores: {{ ansible_processor_vcpus }}"
+
+    - name: Display memory
+      ansible.builtin.debug:
+        msg: "Total RAM: {{ (ansible_memtotal_mb / 1024) | round(2) }} GB"
+
+    - name: Display disk information
+      ansible.builtin.command: df -h /
+      register: disk_info
+      changed_when: false
+
+    - name: Show disk information
+      ansible.builtin.debug:
+        var: disk_info.stdout_lines

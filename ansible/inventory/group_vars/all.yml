@@ -1,0 +1,6 @@
+---
+project_repo: "git@github.com:ghqp/devops-home-lab.git"
+project_branch: "main"
+
+dev_project_dir: "/opt/devops-lab"
+monitoring_project_dir: "/opt/monitoring-lab"

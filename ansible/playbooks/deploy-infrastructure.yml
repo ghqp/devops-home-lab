@@ -1,0 +1,59 @@
+---
+- name: Prepare application source on AUTO01
+  hosts: localhost
+  connection: local
+  become: false
+
+  tasks:
+    - name: Update application repository
+      ansible.builtin.git:
+        repo: "{{ project_repo }}"
+        dest: "{{ lookup('env', 'HOME') }}/devops-home-lab"
+        version: "{{ project_branch }}"
+        update: true
+
+- name: Deploy application files to DEV01
+  hosts: dev
+  become: true
+
+  tasks:
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ dev_project_dir }}"
+        state: directory
+        owner: user
+        group: user
+        mode: "0755"
+
+    - name: Copy application files
+      ansible.posix.synchronize:
+        src: "{{ lookup('env', 'HOME') }}/devops-home-lab/"
+        dest: "{{ dev_project_dir }}/"
+        archive: true
+        delete: false
+        rsync_opts:
+          - "--exclude=.git/"
+          - "--exclude=.github/"
+          - "--exclude=.gitignore"
+      become: false
+
+- name: Deploy monitoring files to MON01
+  hosts: monitoring
+  become: true
+
+  tasks:
+    - name: Create monitoring directory
+      ansible.builtin.file:
+        path: "{{ monitoring_project_dir }}"
+        state: directory
+        owner: user
+        group: user
+        mode: "0755"
+
+    - name: Copy monitoring configuration
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'HOME') }}/devops-home-lab/monitoring/"
+        dest: "{{ monitoring_project_dir }}/"
+        owner: user
+        group: user
+        mode: preserve
