@@ -1,0 +1,9 @@
+services:
+  nginx:
+    image: nginx:stable
+    container_name: dev01-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/html:/usr/share/nginx/html:ro
+    restart: unless-stopped
