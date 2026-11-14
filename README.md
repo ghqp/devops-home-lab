@@ -1,19 +1,32 @@
 # DevOps Home Lab
 
+Personal DevOps learning and portfolio project.
+
 ## Infrastructure
 
-- Hypervisor: VMware Workstation 17
-- Operating System: Debian 13
-- Network: NAT + Host-only
-
-## Services
-
-### DEV01
+- DEV01: Debian 13
+- Virtualization: VMware Workstation 17
+- Network: Isolated Host-Only Network
 - Docker Engine
 - Docker Compose
-- Nginx
 
-## Network
+## Current Services
 
-- DEV01: 172.16.10.10
-- Nginx: http://172.16.10.10:8080
+### Nginx
+
+- Custom Docker image
+- Base image: nginx:stable
+- Custom HTML website
+- Port mapping: 8080:80
+- Restart policy: unless-stopped
+
+## Project Structure
+
+```text
+devops-lab/
+├── compose.yaml
+├── README.md
+└── nginx/
+    ├── Dockerfile
+    └── html/
+        └── index.html
