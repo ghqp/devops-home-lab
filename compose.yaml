@@ -8,6 +8,7 @@ services:
     ports:
       - "8080:80"
     restart: unless-stopped
+
   database:
     image: postgres:17-alpine
     container_name: dev01-postgres
@@ -21,6 +22,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: devops-home-lab/backend:1.0
+    container_name: dev01-backend
+    env_file:
+      - .env
+    depends_on:
+      database:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
