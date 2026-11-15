@@ -4,6 +4,8 @@ services:
     container_name: dev01-nginx
     ports:
       - "8080:80"
+    depends_on:
+      - backend
     restart: unless-stopped
 
   database:
