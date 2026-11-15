@@ -1,0 +1,6 @@
+---
+- name: Refuse a direct role import
+  ansible.builtin.fail:
+    msg: >-
+      Use playbooks/postgres-backup.yml, playbooks/postgres-restore-test.yml,
+      or playbooks/postgres-restore.yml.

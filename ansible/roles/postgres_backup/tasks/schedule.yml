@@ -1,0 +1,23 @@
+---
+- name: Require the backup cron to be installed by user
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'USER') == 'user'
+    fail_msg: "Run this playbook as user. sudo is not used for the crontab."
+
+- name: Ensure the AUTO01 backup directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_backup_auto_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Schedule the daily backup
+  ansible.builtin.cron:
+    name: devops-lab postgres backup
+    user: user
+    minute: "{{ postgres_backup_cron_minute }}"
+    hour: "{{ postgres_backup_cron_hour }}"
+    job: >-
+      cd {{ lookup('env', 'HOME') }}/devops-home-lab/ansible &&
+      {{ lookup('env', 'HOME') }}/.local/bin/ansible-playbook playbooks/postgres-backup.yml
+      >> {{ postgres_backup_cron_log }} 2>&1

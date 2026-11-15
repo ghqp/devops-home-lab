@@ -1,0 +1,67 @@
+---
+- name: Guard the production restore
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Explain that nothing will change
+      when: not (confirm_restore | default(false) | bool)
+      ansible.builtin.debug:
+        msg: "confirm_restore is not true. The production database was not changed."
+
+    - name: Require an absolute backup path before taking the lock
+      when: confirm_restore | default(false) | bool
+      ansible.builtin.assert:
+        that:
+          - restore_file is defined
+          - restore_file is match('^/')
+        fail_msg: "Pass -e confirm_restore=true -e restore_file=/absolute/path/to/backup.dump"
+
+    - name: Stat the backup before taking the lock
+      when: confirm_restore | default(false) | bool
+      ansible.builtin.stat:
+        path: "{{ restore_file }}"
+      register: postgres_restore_source_early
+
+    - name: Fail when the backup file is missing
+      when: confirm_restore | default(false) | bool
+      ansible.builtin.assert:
+        that:
+          - postgres_restore_source_early.stat.exists
+          - postgres_restore_source_early.stat.size | int > 0
+          - postgres_restore_source_early.stat.isreg
+        fail_msg: "Backup file is missing or empty: {{ restore_file }}"
+
+    - name: Stop before any production change
+      when: not (confirm_restore | default(false) | bool)
+      ansible.builtin.meta: end_play
+
+- name: Restore the production PostgreSQL database
+  hosts: dev
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Restore while holding the shared lock
+      when: confirm_restore | default(false) | bool
+      block:
+        - name: Take the shared backup lock
+          ansible.builtin.include_role:
+            name: postgres_backup
+            tasks_from: lock.yml
+          vars:
+            postgres_backup_lock_action: acquire
+
+        - name: Restore the confirmed backup
+          ansible.builtin.import_role:
+            name: postgres_backup
+            tasks_from: restore.yml
+      always:
+        - name: Release the shared backup lock
+          ansible.builtin.include_role:
+            name: postgres_backup
+            tasks_from: lock.yml
+          vars:
+            postgres_backup_lock_action: release

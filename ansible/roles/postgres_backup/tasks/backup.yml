@@ -1,0 +1,210 @@
+---
+- name: Choose a UTC backup name and a unique temporary token
+  ansible.builtin.set_fact:
+    postgres_backup_dump_name: "{{ postgres_backup_prefix }}-{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}.dump"
+    postgres_backup_dump_token: "{{ lookup('pipe', 'python3 -c \"import uuid; print(uuid.uuid4().hex)\"') }}"
+
+- name: Create the DEV01 backup directory
+  ansible.builtin.file:
+    path: "{{ postgres_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create and publish the dump
+  block:
+    - name: Dump the database inside the running container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_container }}"
+          - sh
+          - -c
+          - >-
+            pg_dump -Fc --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+            --file=/tmp/postgres-backup-{{ postgres_backup_dump_token }}.dump
+      register: postgres_backup_dump
+      changed_when: postgres_backup_dump.rc == 0
+
+    - name: Require a non-empty dump inside the container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_container }}"
+          - sh
+          - -c
+          - test -s /tmp/postgres-backup-{{ postgres_backup_dump_token }}.dump
+      changed_when: false
+
+    - name: Copy the dump to a temporary file on DEV01
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - "{{ postgres_backup_container }}:/tmp/postgres-backup-{{ postgres_backup_dump_token }}.dump"
+          - "{{ postgres_backup_dir }}/.{{ postgres_backup_dump_token }}.partial"
+      changed_when: true
+
+    - name: Restrict the temporary dump
+      ansible.builtin.file:
+        path: "{{ postgres_backup_dir }}/.{{ postgres_backup_dump_token }}.partial"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Check whether the final dump name is already taken
+      ansible.builtin.stat:
+        path: "{{ postgres_backup_dir }}/{{ postgres_backup_dump_name }}"
+      register: postgres_backup_existing_dump
+
+    - name: Refuse to overwrite an existing dump
+      ansible.builtin.fail:
+        msg: "Refusing to overwrite {{ postgres_backup_dir }}/{{ postgres_backup_dump_name }}"
+      when: postgres_backup_existing_dump.stat.exists
+
+    - name: Publish the dump atomically
+      ansible.builtin.command:
+        argv:
+          - mv
+          - -n
+          - "{{ postgres_backup_dir }}/.{{ postgres_backup_dump_token }}.partial"
+          - "{{ postgres_backup_dir }}/{{ postgres_backup_dump_name }}"
+      changed_when: true
+
+    - name: Confirm the temporary dump was renamed
+      ansible.builtin.stat:
+        path: "{{ postgres_backup_dir }}/.{{ postgres_backup_dump_token }}.partial"
+      register: postgres_backup_partial_leftover
+
+    - name: Fail when the final name was not replaced
+      ansible.builtin.fail:
+        msg: "The final dump already existed, so {{ postgres_backup_dump_name }} was left unchanged"
+      when: postgres_backup_partial_leftover.stat.exists
+  always:
+    - name: Remove the dump from the container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_container }}"
+          - rm
+          - -f
+          - "/tmp/postgres-backup-{{ postgres_backup_dump_token }}.dump"
+      changed_when: false
+      failed_when: false
+
+    - name: Remove a leftover partial dump
+      ansible.builtin.file:
+        path: "{{ postgres_backup_dir }}/.{{ postgres_backup_dump_token }}.partial"
+        state: absent
+
+- name: Stat the published dump
+  ansible.builtin.stat:
+    path: "{{ postgres_backup_dir }}/{{ postgres_backup_dump_name }}"
+    checksum_algorithm: sha256
+  register: postgres_backup_remote_dump
+
+- name: Fail unless DEV01 has a non-empty dump
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_remote_dump.stat.exists
+      - postgres_backup_remote_dump.stat.size | int > 0
+      - postgres_backup_remote_dump.stat.pw_name == "root"
+      - postgres_backup_remote_dump.stat.mode == "0600"
+    fail_msg: "DEV01 backup {{ postgres_backup_dump_name }} is missing or not root:0600"
+
+- name: Ensure the AUTO01 backup directory exists
+  ansible.builtin.file:
+    path: "{{ postgres_backup_auto_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Check whether AUTO01 already has this dump name
+  ansible.builtin.stat:
+    path: "{{ postgres_backup_auto_dir }}/{{ postgres_backup_dump_name }}"
+  register: postgres_backup_existing_local_dump
+  delegate_to: localhost
+  become: false
+
+- name: Refuse to overwrite the AUTO01 copy
+  ansible.builtin.fail:
+    msg: "Refusing to overwrite {{ postgres_backup_auto_dir }}/{{ postgres_backup_dump_name }}"
+  when: postgres_backup_existing_local_dump.stat.exists
+
+- name: Copy the dump to AUTO01
+  ansible.builtin.fetch:
+    src: "{{ postgres_backup_dir }}/{{ postgres_backup_dump_name }}"
+    dest: "{{ postgres_backup_auto_dir }}/"
+    flat: true
+
+- name: Restrict the AUTO01 copy
+  ansible.builtin.file:
+    path: "{{ postgres_backup_auto_dir }}/{{ postgres_backup_dump_name }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: Stat the AUTO01 copy
+  ansible.builtin.stat:
+    path: "{{ postgres_backup_auto_dir }}/{{ postgres_backup_dump_name }}"
+    checksum_algorithm: sha256
+  register: postgres_backup_local_dump
+  delegate_to: localhost
+  become: false
+
+- name: Fail unless both copies match
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_local_dump.stat.exists
+      - postgres_backup_local_dump.stat.size | int == postgres_backup_remote_dump.stat.size | int
+      - postgres_backup_local_dump.stat.mode == "0600"
+    fail_msg: "AUTO01 did not receive a complete copy of {{ postgres_backup_dump_name }}"
+
+- name: Fail unless the SHA-256 checksums match
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_remote_dump.stat.checksum == postgres_backup_local_dump.stat.checksum
+      - postgres_backup_remote_dump.stat.checksum | length == 64
+    fail_msg: >-
+      SHA-256 mismatch for {{ postgres_backup_dump_name }}.
+      DEV01={{ postgres_backup_remote_dump.stat.checksum | default('') }},
+      AUTO01={{ postgres_backup_local_dump.stat.checksum | default('') }}.
+
+- name: List DEV01 backups
+  ansible.builtin.find:
+    paths: "{{ postgres_backup_dir }}"
+    patterns: "{{ postgres_backup_prefix }}-*.dump"
+    file_type: file
+  register: postgres_backup_remote_backups
+
+- name: Rotate DEV01 backups down to the newest files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ (postgres_backup_remote_backups.files | sort(attribute='mtime', reverse=true))[postgres_backup_keep | int :] }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: List AUTO01 backups
+  ansible.builtin.find:
+    paths: "{{ postgres_backup_auto_dir }}"
+    patterns: "{{ postgres_backup_prefix }}-*.dump"
+    file_type: file
+  register: postgres_backup_local_backups
+  delegate_to: localhost
+  become: false
+
+- name: Rotate AUTO01 backups down to the newest files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  loop: "{{ (postgres_backup_local_backups.files | sort(attribute='mtime', reverse=true))[postgres_backup_keep | int :] }}"
+  loop_control:
+    label: "{{ item.path | basename }}"

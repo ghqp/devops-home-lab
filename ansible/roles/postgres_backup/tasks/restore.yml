@@ -1,0 +1,197 @@
+---
+- name: Require an absolute backup path
+  ansible.builtin.assert:
+    that:
+      - restore_file is defined
+      - restore_file is match('^/')
+    fail_msg: "Pass -e confirm_restore=true -e restore_file=/absolute/path/to/backup.dump"
+
+- name: Stat the backup on AUTO01
+  ansible.builtin.stat:
+    path: "{{ restore_file }}"
+  register: postgres_backup_restore_source
+  delegate_to: localhost
+  become: false
+
+- name: Fail when the backup file is missing
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_restore_source.stat.exists
+      - postgres_backup_restore_source.stat.size | int > 0
+      - postgres_backup_restore_source.stat.isreg
+    fail_msg: "Backup file is missing or empty: {{ restore_file }}"
+
+- name: Read the production database name
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_backup_container }}", printenv, POSTGRES_DB]
+  register: postgres_backup_db_name
+  changed_when: false
+
+- name: Read the production image id
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.Image{{ '}}' }}"
+      - "{{ postgres_backup_container }}"
+  register: postgres_backup_image_id
+  changed_when: false
+
+- name: Check that production accepts a read
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ postgres_backup_container }}"
+      - sh
+      - -c
+      - psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-align --tuples-only --command="SELECT 1"
+  register: postgres_backup_prod_read
+  changed_when: false
+
+- name: Choose a unique staged copy name
+  ansible.builtin.set_fact:
+    postgres_backup_restore_stage: >-
+      {{ postgres_backup_dir }}/restore-production-{{
+      lookup('pipe', 'python3 -c "import uuid; print(uuid.uuid4().hex)"') }}.dump
+
+- name: Stage the archive and restore it
+  block:
+    - name: Stage the backup on DEV01
+      ansible.builtin.copy:
+        src: "{{ restore_file }}"
+        dest: "{{ postgres_backup_restore_stage }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: List the archive
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - none
+          - --entrypoint
+          - pg_restore
+          - --volume
+          - "{{ postgres_backup_dir }}:/dump:ro"
+          - "{{ postgres_backup_image_id.stdout }}"
+          - --list
+          - "/dump/{{ postgres_backup_restore_stage | basename }}"
+      register: postgres_backup_archive_list
+      changed_when: false
+
+    - name: Require the archive to describe lab_status and the production database
+      ansible.builtin.assert:
+        that:
+          - postgres_backup_prod_read.stdout | trim == "1"
+          - "'TABLE DATA public lab_status' in postgres_backup_archive_list.stdout"
+          - "'dbname: ' ~ (postgres_backup_db_name.stdout | trim) in postgres_backup_archive_list.stdout"
+        fail_msg: "Archive is not a readable dump of the production database"
+
+    - name: Take a safety backup of the current database
+      ansible.builtin.import_tasks: backup.yml
+
+    - name: Restore into the existing database
+      block:
+        - name: Stop only the backend
+          ansible.builtin.command:
+            argv: [docker, stop, "{{ postgres_backup_backend_container }}"]
+          register: postgres_backup_backend_stop
+          changed_when: true
+
+        - name: Copy the archive into the production container
+          ansible.builtin.command:
+            argv:
+              - docker
+              - cp
+              - "{{ postgres_backup_restore_stage }}"
+              - "{{ postgres_backup_container }}:/tmp/{{ postgres_backup_restore_stage | basename }}"
+          changed_when: true
+
+        - name: Restore the archive
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ postgres_backup_container }}"
+              - sh
+              - -c
+              - >-
+                pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+                --clean --if-exists --single-transaction --exit-on-error
+                /tmp/{{ postgres_backup_restore_stage | basename }}
+          register: postgres_backup_restore_result
+          failed_when: false
+          changed_when: postgres_backup_restore_result.rc == 0
+      always:
+        - name: Remove the archive from the production container
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ postgres_backup_container }}"
+              - rm
+              - -f
+              - "/tmp/{{ postgres_backup_restore_stage | basename }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Start the backend again
+          ansible.builtin.command:
+            argv: [docker, start, "{{ postgres_backup_backend_container }}"]
+          register: postgres_backup_backend_start
+          failed_when: false
+          changed_when: postgres_backup_backend_start.rc == 0
+
+        - name: Check the application health endpoint
+          ansible.builtin.uri:
+            url: http://127.0.0.1:8080/api/health
+            method: GET
+            status_code: 200
+          register: postgres_backup_restore_health
+          retries: 10
+          delay: 5
+          until: postgres_backup_restore_health.status | default(0) == 200
+          failed_when: false
+
+        - name: Record restore, backend, and health outcomes
+          ansible.builtin.set_fact:
+            postgres_backup_restore_rc: "{{ (postgres_backup_restore_result | default({})).rc | default(-1) }}"
+            postgres_backup_backend_start_rc: "{{ (postgres_backup_backend_start | default({})).rc | default(-1) }}"
+            postgres_backup_restore_health_status: "{{ (postgres_backup_restore_health | default({})).status | default(0) }}"
+  always:
+    - name: Remove only the staged restore file
+      ansible.builtin.file:
+        path: "{{ postgres_backup_restore_stage }}"
+        state: absent
+      failed_when: false
+
+- name: Report a successful production restore
+  when:
+    - postgres_backup_restore_rc | int == 0
+    - postgres_backup_backend_start_rc | int == 0
+    - postgres_backup_restore_health_status | int == 200
+  ansible.builtin.debug:
+    msg: "Production database restored from {{ restore_file | basename }}. Health check returned 200."
+
+- name: Fail with the saved restore and follow-up errors
+  when: >-
+    postgres_backup_restore_rc | int != 0 or
+    postgres_backup_backend_start_rc | int != 0 or
+    postgres_backup_restore_health_status | int != 200
+  ansible.builtin.fail:
+    msg: >-
+      Production restore was not successful.
+      backend stop rc={{ (postgres_backup_backend_stop | default({})).rc | default('not run') }},
+      stderr={{ (postgres_backup_backend_stop | default({})).stderr | default('') }}.
+      pg_restore rc={{ (postgres_backup_restore_result | default({})).rc | default('not run') }},
+      stdout={{ (postgres_backup_restore_result | default({})).stdout | default('') }},
+      stderr={{ (postgres_backup_restore_result | default({})).stderr | default('') }}.
+      backend start rc={{ (postgres_backup_backend_start | default({})).rc | default('not run') }},
+      stderr={{ (postgres_backup_backend_start | default({})).stderr | default('') }}.
+      health status={{ (postgres_backup_restore_health | default({})).status | default('not run') }},
+      msg={{ (postgres_backup_restore_health | default({})).msg | default('') }}.

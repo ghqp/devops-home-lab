@@ -1,0 +1,107 @@
+---
+- name: Release the shared backup lock
+  when: >-
+    postgres_backup_lock_action | default('acquire') == 'release'
+    and postgres_backup_lock_holder is defined
+    and (postgres_backup_lock_holder.rc | default(1) | int) == 0
+    and (postgres_backup_lock_holder.stdout | default('') | trim) is match('^[0-9]+$')
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pid="{{ postgres_backup_lock_holder.stdout | trim }}"
+    if [[ ! -d "/proc/${pid}" ]]; then
+      exit 0
+    fi
+    if ! tr '\0' '\n' < "/proc/${pid}/environ" | grep -qx 'POSTGRES_BACKUP_LOCK_HOLDER=1'; then
+      echo "refusing to kill ${pid}; it is not the backup lock holder" >&2
+      exit 1
+    fi
+    if ! kill "${pid}" 2>/dev/null; then
+      if [[ ! -d "/proc/${pid}" ]]; then
+        exit 0
+      fi
+      echo "failed to stop lock holder ${pid}" >&2
+      exit 1
+    fi
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        exit 0
+      fi
+      sleep 0.1
+    done
+    echo "lock holder ${pid} is still running" >&2
+    exit 1
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Hold the shared backup lock for this Ansible run
+  when: postgres_backup_lock_action | default('acquire') == 'acquire'
+  ansible.builtin.shell: |
+    set -euo pipefail
+    mkdir -p "{{ postgres_backup_auto_dir }}"
+    chmod 700 "{{ postgres_backup_auto_dir }}"
+    exec 9>"{{ postgres_backup_lock }}"
+    if ! flock -n 9; then
+      echo "another backup or restore is running" >&2
+      exit 1
+    fi
+    chmod 600 "{{ postgres_backup_lock }}"
+    owner="$(python3 -c 'import os
+    def parent(pid):
+        data = open("/proc/%s/stat" % pid, encoding="utf-8").read()
+        return int(data[data.rfind(")") + 2:].split()[1])
+    def is_playbook(pid):
+        try:
+            raw = open("/proc/%s/cmdline" % pid, "rb").read()
+        except FileNotFoundError:
+            return False
+        for token in raw.split(b"\0"):
+            if not token:
+                continue
+            name = token.decode(errors="replace").rstrip("/").split("/")[-1]
+            if name == "ansible-playbook":
+                return True
+        return False
+    pid = os.getppid()
+    found = None
+    while pid > 1:
+        if is_playbook(pid):
+            found = pid
+        pid = parent(pid)
+    if found is None:
+        raise SystemExit("ansible-playbook process was not found")
+    print(found)')"
+    export POSTGRES_BACKUP_LOCK_HOLDER=1
+    export POSTGRES_BACKUP_LOCK_OWNER="${owner}"
+    holder="$(python3 -c 'import os, signal, time
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    child = os.fork()
+    if child > 0:
+        print(child, flush=True)
+        os._exit(0)
+    os.setsid()
+    null = os.open("/dev/null", os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    target = int(os.environ["POSTGRES_BACKUP_LOCK_OWNER"])
+    while True:
+        try:
+            os.kill(target, 0)
+        except OSError:
+            break
+        time.sleep(1)
+    ')"
+    sleep 0.2
+    if ! kill -0 "${holder}"; then
+      echo "backup lock holder exited immediately" >&2
+      exit 1
+    fi
+    printf '%s\n' "${holder}"
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: postgres_backup_lock_holder
+  changed_when: false

@@ -1,0 +1,19 @@
+---
+postgres_backup_container: dev01-postgres
+postgres_backup_backend_container: dev01-backend
+postgres_backup_dir: /var/backups/devops-lab/postgres
+postgres_backup_prefix: devops-lab
+postgres_backup_keep: 7
+postgres_backup_auto_dir: "{{ lookup('env', 'HOME') }}/backups/devops-lab/postgres"
+postgres_backup_lock: "{{ postgres_backup_auto_dir }}/backup.lock"
+postgres_backup_lock_action: acquire
+postgres_backup_restore_test_name: devops-lab-pg-restore-test
+postgres_backup_cron_minute: "15"
+postgres_backup_cron_hour: "3"
+postgres_backup_cron_log: "{{ postgres_backup_auto_dir }}/cron.log"
+postgres_backup_fingerprint_shell: >-
+  psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+  --no-align --tuples-only --field-separator='|'
+  --command="SELECT (SELECT count(*) FROM lab_status)::text,
+  md5(coalesce((SELECT jsonb_agg(jsonb_build_array(id, service_name, status, created_at)
+  ORDER BY id)::text FROM lab_status), '[]'))"

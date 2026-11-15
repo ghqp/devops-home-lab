@@ -1,0 +1,27 @@
+---
+- name: Back up PostgreSQL on DEV01
+  hosts: dev
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Back up while holding the shared lock
+      block:
+        - name: Take the shared backup lock
+          ansible.builtin.include_role:
+            name: postgres_backup
+            tasks_from: lock.yml
+          vars:
+            postgres_backup_lock_action: acquire
+
+        - name: Run the backup
+          ansible.builtin.import_role:
+            name: postgres_backup
+            tasks_from: backup.yml
+      always:
+        - name: Release the shared backup lock
+          ansible.builtin.include_role:
+            name: postgres_backup
+            tasks_from: lock.yml
+          vars:
+            postgres_backup_lock_action: release

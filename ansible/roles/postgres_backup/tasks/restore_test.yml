@@ -1,0 +1,249 @@
+---
+- name: Require a backup file on AUTO01
+  ansible.builtin.assert:
+    that:
+      - restore_file is defined
+      - restore_file is match('^/')
+    fail_msg: "Pass -e restore_file=/absolute/path/to/backup.dump (a file on AUTO01)"
+
+- name: Stat the backup on AUTO01
+  ansible.builtin.stat:
+    path: "{{ restore_file }}"
+  register: postgres_backup_restore_source
+  delegate_to: localhost
+  become: false
+
+- name: Fail when the backup file is missing
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_restore_source.stat.exists
+      - postgres_backup_restore_source.stat.size | int > 0
+      - postgres_backup_restore_source.stat.isreg
+    fail_msg: "Backup file is missing or empty: {{ restore_file }}"
+
+- name: Read the production lab_status fingerprint
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ postgres_backup_container }}"
+      - sh
+      - -c
+      - "{{ postgres_backup_fingerprint_shell }}"
+  register: postgres_backup_prod_before
+  changed_when: false
+
+- name: Read the production image id
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --format
+      - "{{ '{{' }}.Image{{ '}}' }}"
+      - "{{ postgres_backup_container }}"
+  register: postgres_backup_image_id
+  changed_when: false
+
+- name: Read the production database user
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_backup_container }}", printenv, POSTGRES_USER]
+  register: postgres_backup_db_user
+  changed_when: false
+
+- name: Read the production database name
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_backup_container }}", printenv, POSTGRES_DB]
+  register: postgres_backup_db_name
+  changed_when: false
+
+- name: Choose a unique staged copy name
+  ansible.builtin.set_fact:
+    postgres_backup_restore_test_stage: >-
+      {{ postgres_backup_dir }}/restore-test-{{
+      lookup('pipe', 'python3 -c "import uuid; print(uuid.uuid4().hex)"') }}.dump
+
+- name: Refuse to clean up anything except the restore-test volume
+  ansible.builtin.assert:
+    that:
+      - postgres_backup_restore_test_name == "devops-lab-pg-restore-test"
+    fail_msg: "Refusing to remove an unexpected Docker resource"
+
+- name: Restore into a temporary database and compare it
+  block:
+    - name: Stage the backup on DEV01
+      ansible.builtin.copy:
+        src: "{{ restore_file }}"
+        dest: "{{ postgres_backup_restore_test_stage }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Remove a leftover restore-test container
+      ansible.builtin.command:
+        argv: [docker, rm, -f, "{{ postgres_backup_restore_test_name }}"]
+      changed_when: false
+      failed_when: false
+
+    - name: Remove a leftover restore-test volume
+      ansible.builtin.command:
+        argv: [docker, volume, rm, "{{ postgres_backup_restore_test_name }}"]
+      changed_when: false
+      failed_when: false
+
+    - name: List the archive before starting a database
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - none
+          - --entrypoint
+          - pg_restore
+          - --volume
+          - "{{ postgres_backup_dir }}:/dump:ro"
+          - "{{ postgres_backup_image_id.stdout }}"
+          - --list
+          - "/dump/{{ postgres_backup_restore_test_stage | basename }}"
+      register: postgres_backup_archive_list
+      changed_when: false
+
+    - name: Require the archive to describe lab_status and the production database
+      ansible.builtin.assert:
+        that:
+          - "'TABLE DATA public lab_status' in postgres_backup_archive_list.stdout"
+          - "'dbname: ' ~ (postgres_backup_db_name.stdout | trim) in postgres_backup_archive_list.stdout"
+        fail_msg: "Archive failed pg_restore --list or does not belong to the production database"
+
+    - name: Create the temporary volume
+      ansible.builtin.command:
+        argv: [docker, volume, create, "{{ postgres_backup_restore_test_name }}"]
+      changed_when: true
+
+    - name: Start a temporary PostgreSQL container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --detach
+          - --name
+          - "{{ postgres_backup_restore_test_name }}"
+          - --network
+          - none
+          - --env
+          - "POSTGRES_USER={{ postgres_backup_db_user.stdout }}"
+          - --env
+          - "POSTGRES_DB={{ postgres_backup_db_name.stdout }}"
+          - --env
+          - POSTGRES_HOST_AUTH_METHOD=trust
+          - --volume
+          - "{{ postgres_backup_restore_test_name }}:/var/lib/postgresql/data"
+          - "{{ postgres_backup_image_id.stdout }}"
+      changed_when: true
+
+    - name: Wait until the temporary database accepts connections
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_restore_test_name }}"
+          - pg_isready
+          - --username
+          - "{{ postgres_backup_db_user.stdout }}"
+          - --dbname
+          - "{{ postgres_backup_db_name.stdout }}"
+      register: postgres_backup_test_ready
+      retries: 30
+      delay: 1
+      until: postgres_backup_test_ready.rc == 0
+      changed_when: false
+
+    - name: Copy the archive into the temporary container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - "{{ postgres_backup_restore_test_stage }}"
+          - "{{ postgres_backup_restore_test_name }}:/tmp/{{ postgres_backup_restore_test_stage | basename }}"
+      changed_when: true
+
+    - name: Restore the archive into the temporary database
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_restore_test_name }}"
+          - pg_restore
+          - --username
+          - "{{ postgres_backup_db_user.stdout }}"
+          - --dbname
+          - "{{ postgres_backup_db_name.stdout }}"
+          - --exit-on-error
+          - "/tmp/{{ postgres_backup_restore_test_stage | basename }}"
+      changed_when: true
+
+    - name: Read the restored lab_status fingerprint
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_restore_test_name }}"
+          - sh
+          - -c
+          - "{{ postgres_backup_fingerprint_shell }}"
+      register: postgres_backup_restored_fingerprint
+      changed_when: false
+
+    - name: Read the production fingerprint again
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ postgres_backup_container }}"
+          - sh
+          - -c
+          - "{{ postgres_backup_fingerprint_shell }}"
+      register: postgres_backup_prod_after
+      changed_when: false
+
+    - name: Require the same rows and an unchanged production table
+      ansible.builtin.assert:
+        that:
+          - (postgres_backup_restored_fingerprint.stdout.split('|') | first | trim) == (postgres_backup_prod_before.stdout.split('|') | first | trim)
+          - (postgres_backup_restored_fingerprint.stdout.split('|') | last | trim) == (postgres_backup_prod_before.stdout.split('|') | last | trim)
+          - (postgres_backup_prod_after.stdout.split('|') | first | trim) == (postgres_backup_prod_before.stdout.split('|') | first | trim)
+          - (postgres_backup_prod_after.stdout.split('|') | last | trim) == (postgres_backup_prod_before.stdout.split('|') | last | trim)
+        fail_msg: >-
+          Restore test failed.
+          Production count={{ postgres_backup_prod_before.stdout.split('|') | first | trim }},
+          checksum={{ postgres_backup_prod_before.stdout.split('|') | last | trim }}.
+          Restored count={{ postgres_backup_restored_fingerprint.stdout.split('|') | first | trim }},
+          checksum={{ postgres_backup_restored_fingerprint.stdout.split('|') | last | trim }}.
+          Production after count={{ postgres_backup_prod_after.stdout.split('|') | first | trim }},
+          checksum={{ postgres_backup_prod_after.stdout.split('|') | last | trim }}.
+
+    - name: Report the restore test
+      ansible.builtin.debug:
+        msg: >-
+          Restore test passed for {{ restore_file | basename }}.
+          lab_status row count {{ postgres_backup_prod_before.stdout.split('|') | first | trim }}
+          and content checksum {{ postgres_backup_prod_before.stdout.split('|') | last | trim }}
+          match the restored database. Production count and checksum did not change.
+  always:
+    - name: Remove the temporary container
+      ansible.builtin.command:
+        argv: [docker, rm, -f, "{{ postgres_backup_restore_test_name }}"]
+      changed_when: false
+      failed_when: false
+
+    - name: Remove only the temporary volume
+      ansible.builtin.command:
+        argv: [docker, volume, rm, "{{ postgres_backup_restore_test_name }}"]
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the staged backup
+      ansible.builtin.file:
+        path: "{{ postgres_backup_restore_test_stage }}"
+        state: absent
+      failed_when: false

@@ -1,0 +1,12 @@
+---
+- name: Schedule the daily PostgreSQL backup
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Install the crontab entry
+      ansible.builtin.import_role:
+        name: postgres_backup
+        tasks_from: schedule.yml
