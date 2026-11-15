@@ -1,0 +1,50 @@
+---
+- name: Deploy application images from GHCR
+  hosts: dev
+  become: true
+  gather_facts: false
+
+  vars:
+    image_tag: latest
+
+  tasks:
+    - name: Log in to GHCR
+      when: ghcr_token | default('') | length > 0
+      ansible.builtin.command:
+        cmd: docker login ghcr.io --username {{ ghcr_user }} --password-stdin
+        stdin: "{{ ghcr_token }}"
+      no_log: true
+      changed_when: false
+
+    - name: Pull nginx and backend images
+      ansible.builtin.command:
+        cmd: docker compose pull nginx backend
+        chdir: "{{ dev_project_dir }}"
+      environment:
+        IMAGE_TAG: "{{ image_tag }}"
+      changed_when: false
+
+    - name: Recreate nginx and backend from the pulled images
+      ansible.builtin.command:
+        cmd: docker compose up -d --no-deps nginx backend
+        chdir: "{{ dev_project_dir }}"
+      environment:
+        IMAGE_TAG: "{{ image_tag }}"
+      register: compose_up
+      changed_when: >
+        'Started' in compose_up.stdout or 'Recreated' in compose_up.stdout or
+        'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr
+
+    - name: Wait for application health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/api/health
+        method: GET
+        status_code: 200
+      register: app_health
+      retries: 10
+      delay: 5
+      until: app_health.status == 200
+
+    - name: Report application health
+      ansible.builtin.debug:
+        msg: "Application on DEV01 is healthy (IMAGE_TAG={{ image_tag }})"

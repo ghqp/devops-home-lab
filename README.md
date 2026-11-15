@@ -173,6 +173,13 @@ ansible-playbook playbooks/deploy-infrastructure.yml
 ansible-playbook playbooks/start-infrastructure.yml
 ```
 
+Pull nginx and backend from GHCR and recreate only those containers. Postgres, its volume, and the monitoring stack stay as they are. `latest` is the default tag. A commit SHA published by CI can be passed explicitly. On a push to `main`, the self-hosted runner on AUTO01 runs this after the image build, passing the commit SHA as `image_tag`. The same command can still be run by hand. If the GHCR packages are private, pass `ghcr_user` and `ghcr_token` as extra vars. Do not store the token in the repository.
+
+```bash
+ansible-playbook playbooks/deploy-app.yml
+ansible-playbook playbooks/deploy-app.yml -e image_tag=<git-sha>
+```
+
 For additional Ansible configuration and deployment details, see [Ansible README](ansible/README.md).
 
 ## Infrastructure Automation Features
@@ -213,7 +220,6 @@ Planned development:
 
 - Terraform infrastructure provisioning.
 - Kubernetes cluster deployment.
-- CI/CD improvements.
 - Automated Ansible linting and validation.
 - Expanded monitoring and alerting.
 - Centralized logging.

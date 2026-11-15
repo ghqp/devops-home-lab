@@ -28,6 +28,7 @@ ansible-lab/
 │   └── group_vars/
 │       └── all.yml
 ├── playbooks/
+│   ├── deploy-app.yml
 │   ├── deploy-infrastructure.yml
 │   ├── docker-setup.yml
 │   ├── start-infrastructure.yml
@@ -100,6 +101,7 @@ ansible-playbook site.yml
 | `vmware-tools-network.yml` | Protect Docker bridges from VMware Tools suspend/resume |
 | `deploy-infrastructure.yml` | Deploy application and monitoring configuration |
 | `start-infrastructure.yml` | Start application and monitoring |
+| `deploy-app.yml` | Pull nginx and backend from GHCR and recreate those containers |
 | `system-info.yml` | Collect system information |
 | `system-maintenance.yml` | Perform system maintenance |
 

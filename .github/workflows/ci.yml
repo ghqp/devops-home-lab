@@ -92,3 +92,20 @@ jobs:
 
       - name: Run Ansible Lint
         run: ansible-lint .
+
+  deploy:
+    name: Deploy application to DEV01
+    needs: [build, ansible-validation]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, auto01]
+
+    defaults:
+      run:
+        working-directory: ansible
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy nginx and backend
+        run: ansible-playbook playbooks/deploy-app.yml -e image_tag=${{ github.sha }}
