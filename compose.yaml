@@ -1,9 +1,6 @@
 services:
   nginx:
-    build:
-      context: ./nginx
-      dockerfile: Dockerfile
-    image: devops-home-lab/nginx:1.0
+    image: ghcr.io/ghqp/devops-home-lab/nginx:${IMAGE_TAG:-latest}
     container_name: dev01-nginx
     ports:
       - "8080:80"
@@ -25,10 +22,7 @@ services:
     restart: unless-stopped
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    image: devops-home-lab/backend:1.0
+    image: ghcr.io/ghqp/devops-home-lab/backend:${IMAGE_TAG:-latest}
     container_name: dev01-backend
     env_file:
       - .env
