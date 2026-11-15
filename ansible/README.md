@@ -32,11 +32,13 @@ ansible-lab/
 │   ├── docker-setup.yml
 │   ├── start-infrastructure.yml
 │   ├── system-info.yml
-│   └── system-maintenance.yml
+│   ├── system-maintenance.yml
+│   └── vmware-tools-network.yml
 ├── roles/
 │   ├── application/
 │   ├── docker/
-│   └── monitoring/
+│   ├── monitoring/
+│   └── vmware_tools_network/
 ├── requirements.yml
 └── site.yml
 ```
@@ -95,10 +97,25 @@ ansible-playbook site.yml
 |---|---|
 | `site.yml` | Complete infrastructure deployment |
 | `docker-setup.yml` | Docker configuration |
+| `vmware-tools-network.yml` | Protect Docker bridges from VMware Tools suspend/resume |
 | `deploy-infrastructure.yml` | Deploy application and monitoring configuration |
 | `start-infrastructure.yml` | Start application and monitoring |
 | `system-info.yml` | Collect system information |
 | `system-maintenance.yml` | Perform system maintenance |
+
+## VMware Tools and Docker networking
+
+On VMware guests, `open-vm-tools` runs `/etc/vmware-tools/scripts/vmware/network` during suspend and resume.
+
+The suspend path records active Ethernet interfaces and later flushes their addresses. Docker bridges (`docker0`, `br-*`) and `veth*` pairs are included by default, so gateway addresses such as `172.17.0.1/16` and `172.18.0.1/16` disappear. Published container ports then time out until the addresses are restored.
+
+The `vmware_tools_network` role patches that script in place so container interfaces are skipped. The upstream script itself is not copied into the application tree.
+
+Run only this fix:
+
+```bash
+ansible-playbook playbooks/vmware-tools-network.yml
+```
 
 ## Monitoring
 

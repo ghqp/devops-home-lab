@@ -1,0 +1,36 @@
+---
+- name: Check whether open-vm-tools network script exists
+  ansible.builtin.stat:
+    path: "{{ vmware_tools_network_script }}"
+  register: vmware_tools_network_script_stat
+
+- name: Patch open-vm-tools network script to skip container interfaces
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ role_path }}/files/patch_save_active_nic_list.py"
+      - "{{ vmware_tools_network_script }}"
+  register: vmware_tools_network_patch
+  changed_when: vmware_tools_network_patch.stdout.strip() == "patched"
+  when: vmware_tools_network_script_stat.stat.exists
+
+- name: Ensure container interface skip marker is present
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -F
+      - skipping container interface
+      - "{{ vmware_tools_network_script }}"
+  register: vmware_tools_network_skip_marker
+  changed_when: false
+  failed_when: vmware_tools_network_skip_marker.rc != 0
+  when: vmware_tools_network_script_stat.stat.exists
+
+- name: Validate open-vm-tools network script syntax
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -n
+      - "{{ vmware_tools_network_script }}"
+  changed_when: false
+  when: vmware_tools_network_script_stat.stat.exists

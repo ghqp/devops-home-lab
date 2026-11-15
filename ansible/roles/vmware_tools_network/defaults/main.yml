@@ -1,0 +1,3 @@
+---
+# Path to the open-vm-tools network power script on Debian guests.
+vmware_tools_network_script: /etc/vmware-tools/scripts/vmware/network
